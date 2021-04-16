@@ -1,4 +1,4 @@
-using JuMP, Gurobi, Plots, Ipopt
+using JuMP, Plots, Ipopt
 
 g = 9.81
 Pmax = 1000 # Watts
@@ -53,14 +53,16 @@ end
 
 optimize!(m)
 
-plot(getvalue.(speed))
-plot!(grads)
-plot!(getvalue.(W))
+p1 = plot(getvalue.(speed), label = "Speed (m/s)")
+p2 = plot(grads, label = "Gradient (%)")
+p3 = plot(getvalue.(P), label = "Power (W)")
+p4 = plot(getvalue.(W), label = "W' (kJ)")
+plot(p1, p2, p3, p4, layout = (4, 1), legend = :inside)
 
 
 # W' model validation
 # W' consumption (exponential for now)
-Pexp = 0:25:500
-plot(Pexp, FTP.*exp.((Pexp .- FTP)./FTP) .- FTP)
+# Pexp = 0:25:500
+# plot(Pexp, FTP.*exp.((Pexp .- FTP)./FTP) .- FTP)
 # W' recovery (linear for now)
-plot(Pexp, -Pexp .+ FTP)
+# plot(Pexp, -Pexp .+ FTP)
