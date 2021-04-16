@@ -18,7 +18,7 @@ sector_length = 0.050 .* ones(n)                                 # sector length
 m = Model(with_optimizer(Ipopt.Optimizer))
 
 # Course variables
-@variable(m, speed[1:n] >= 0)               # speed (m/s)
+@variable(m, speed[1:n] >= 0)               # speed ()
 @variable(m, sector_time[1:n] >= 0)         # sector time (s)
 @variable(m, xvel[1:n] >= 0)                # horizontal velocity (m/s)
 @variable(m, yvel[1:n])                     # vertical velocity (m/s)
@@ -35,8 +35,13 @@ m = Model(with_optimizer(Ipopt.Optimizer))
 @variable(m, Wmax >= W[1:n] >= 0)
 
 # Physiological constraints
-for i=1:n
-    @NLconstraint(m, P[i] >= (1/2*CdA) * (speed[i] / 3.6)^3 + RR*mass*speed[i]/3.6 + g*mass*yvel[i])
+@NLconstraint(m, P[1] >= (1/2*CdA) * (speed[1] / 3.6)^3 + RR*mass*(speed[1] / 3.6) + g*mass*yvel[1] + 
+        0.5*mass*((speed[1] / 3.6)^2) / sector_time[1])
+@NLconstraint(m, Wcost[1] >= FTP*exp((P[1] - FTP)/FTP) - FTP)
+@constraint(m, Wrec[1] <= 0.5*(FTP - P[1]))
+for i=2:n
+    @NLconstraint(m, P[i] >= (1/2*CdA) * (speed[i] / 3.6)^3 + RR*mass*(speed[i] / 3.6) + g*mass*yvel[i] + 
+                0.5*mass*((speed[i] / 3.6)^2 - (speed[i-1] / 3.6)^2) / sector_time[i])
     @NLconstraint(m, Wcost[i] >= FTP*exp((P[i] - FTP)/FTP) - FTP)
     @constraint(m, Wrec[i] <= 0.5*(FTP - P[i]))
 end
