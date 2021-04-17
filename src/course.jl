@@ -10,38 +10,45 @@ RR = 0.05    # W/(kgm/s)
 CdA = 0.25
 
 # Course parameters
-grads = rand(n_sectors) .+ 5 .* sin.(collect(1:n_sectors) ./ 10) # gradient (%)
-n = 100                                                          # number of sectors
-sector_length = 0.050 .* ones(n)                                 # sector length (km)   
+mutable struct Course
+    name         # string
+    lengths      # m, as the crow flies
+    gradients    # %
+end
+
+n=100
+rc = Course("Test", 
+            50 .* ones(n), 
+            rand(n) .+ 5 .* sin.(collect(1:n) ./ 10))
 
 # Initializing model
 m = Model(with_optimizer(Ipopt.Optimizer))
 
 # Course variables
-@variable(m, speed[1:n] >= 0)               # speed ()
+@variable(m, speed[1:n] >= 0)               # speed (m/s)
 @variable(m, sector_time[1:n] >= 0)         # sector time (s)
 @variable(m, xvel[1:n] >= 0)                # horizontal velocity (m/s)
 @variable(m, yvel[1:n])                     # vertical velocity (m/s)
 
 # Course constraints
-@constraint(m, xvel .== speed / 3.6 .* (1 .- grads./ 100)) 
-@constraint(m, yvel .== speed / 3.6 .* grads ./ 100)
-@constraint(m, sector_time .*  xvel .== 1000 .* sector_length)
+@constraint(m, speed .* cos.(rc.gradients ./100) .== xvel)
+@constraint(m, yvel .== xvel .* rc.gradients ./ 100)
+@constraint(m, sector_time .*  xvel .== rc.lengths)
 
 # Physiological variables
 @variable(m, Pmax >= P[1:n] >= 0) # Power in each sector
 @variable(m, Wcost[1:n] >= 0) # W' cost
-@variable(m, Wrec[1:n])  # W' recovery
+@variable(m, Wrec[1:n])       # W' recovery
 @variable(m, Wmax >= W[1:n] >= 0)
 
 # Physiological constraints
-@NLconstraint(m, P[1] >= (1/2*CdA) * (speed[1] / 3.6)^3 + RR*mass*(speed[1] / 3.6) + g*mass*yvel[1] + 
-        0.5*mass*((speed[1] / 3.6)^2) / sector_time[1])
+@NLconstraint(m, P[1] >= (1/2*CdA) * speed[1]^3 + RR*mass*speed[1] + g*mass*yvel[1] + 
+        0.5*mass*(speed[1]^2) / sector_time[1])
 @NLconstraint(m, Wcost[1] >= FTP*exp((P[1] - FTP)/FTP) - FTP)
 @constraint(m, Wrec[1] <= 0.5*(FTP - P[1]))
 for i=2:n
-    @NLconstraint(m, P[i] >= (1/2*CdA) * (speed[i] / 3.6)^3 + RR*mass*(speed[i] / 3.6) + g*mass*yvel[i] + 
-                0.5*mass*((speed[i] / 3.6)^2 - (speed[i-1] / 3.6)^2) / sector_time[i])
+    @NLconstraint(m, P[i] >= (1/2*CdA) * speed[i]^3 + RR*mass*speed[i] + g*mass*yvel[i] + 
+                0.5*mass*(speed[i]^2 - speed[i-1]^2) / sector_time[i])
     @NLconstraint(m, Wcost[i] >= FTP*exp((P[i] - FTP)/FTP) - FTP)
     @constraint(m, Wrec[i] <= 0.5*(FTP - P[i]))
 end
@@ -58,8 +65,8 @@ optimize!(m)
 # Plotting results
 xvals = [getvalue.(sector_time)[1]]
 [push!(xvals, xvals[end] + getvalue.(sector_time)[i]) for i=2:n];
-p1 = plot(xvals, getvalue.(speed), label = "Speed (kph)")
-p2 = plot(xvals, grads, label = "Gradient (%)")
+p1 = plot(xvals, 3.6*getvalue.(speed), label = "Speed (kph)")
+p2 = plot(xvals, rc.gradients, label = "Gradient (%)")
 p3 = plot(xvals, getvalue.(P), label = "Power (W)")
 p4 = plot(xvals, getvalue.(W), label = "W' (kJ)")
 plot(p1, p2, p3, p4, layout = (4, 1), xlabel = "Time (s)", legend = :bottomleft)
