@@ -7,7 +7,7 @@ include("plots.jl")
 rider = Rider()
 course = Course(name = "Test",
             lengths = 100 .* ones(100), 
-            gradients = 5 .* sin.(collect(1:100) ./ 10))
+            gradients = 1 .* cos.(collect(1:100) ./ 50) + 5 .* sin.(collect(1:100) ./ 10))
 
 # Optimal pacing model
 function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
