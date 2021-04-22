@@ -42,7 +42,7 @@ function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
     @constraint(m, xtime .*  xvel .== course.lengths)
 
     # Drag constraints
-    @constraint(m, rrP .== rider.Crr*rider.mass*xvel) # TODO check assumption
+    @constraint(m, rrP .== rider.Crr*rider.mass*xvel)
     @constraint(m, gP .== g*rider.mass*yvel)
     @NLconstraint(m, [i=1:n], dP[i] >= (0.5*course.rho*rider.CdA) * speed[i] ^ 3)
 
