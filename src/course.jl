@@ -67,6 +67,7 @@ function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
 end
 
 m = pacing_model(rider, course)
+set_start_value.(m[:P], 1.1*rider.CP.*ones(length(m[:P])))
 optimize!(m)
 
 # Plotting results

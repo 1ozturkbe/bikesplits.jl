@@ -16,3 +16,20 @@ end
     n = length(lengths)              # Number of sectors
     rho::Real = 1.2                  # Air density (kg/m^3)
 end
+
+""" Training plan parameters. """
+@with_kw mutable struct PlanParams
+    name::String = "Training Plan"
+    hrs::Array = (6, 10)             # min/max hours per week
+    TSS::Array = (300, 600)          # min/max TSS per week
+    rides::Array = (4,6)             # min/max rides per week
+
+    # Current fitness
+    CTL::Real = 40
+    Fatigue::Real = 10
+
+    # Racing schedule (days from today)
+    As::Array = [120, 160]           # list of A races
+    Bs::Array = [140]                # list of B races
+    Cs::Array = [100, 150]           # list of C races
+end
