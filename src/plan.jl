@@ -21,7 +21,26 @@ rest_day = 1 # Monday
 target_dates = [124, 139]
 target_race_TSSs = [200, 170]
 
-rest_day_TSS = 40
+rest_day_TSS = 0
+interval_day_TSS_min = 100
+interval_day_TSS_max = minimum(target_fitnesses)/initial_fitness*interval_day_TSS_min
+
+# Determine base, build and specialty
+# FEEL FREE TO MODIFY THESE TO YOUR LIKING. NO MORE THAN 10 WEEKS IN BUILD!
+race_weeks = Int.(floor.(target_dates/7))
+rest_weeks  = collect(1:Int(floor(n_weeks/4)))*4
+n_build_weeks = minimum([10, Int(floor(maximum([4, 0.5 * (n_weeks 
+        - length(rest_weeks) - length(race_weeks))])))])
+n_base_weeks = n_weeks - length(race_weeks) - length(rest_weeks) - n_build_weeks
+base_weeks = [i for i in collect(1:n_base_weeks) if (i in rest_weeks) == false]
+build_weeks = []
+for i=n_base_weeks+1:n_weeks
+    if ((i in race_weeks) == false) && ((i in rest_weeks) == false)
+        append!(build_weeks, i)
+    end
+end
+# build_weeks = Int(floor)
+
 
 @variables(m, begin
     TSS[1:n] >= 0              # TSS on day i
@@ -33,16 +52,11 @@ rest_day_TSS = 40
     form[1:n]
 end)
 
-# Objective function
+# Objective function (i.e. minimize fitness error)
 @variable(m, fitness_error[1:length(target_dates)] >= 0)
-@variable(m, max_fitness >= 0)
 @constraint(m, fitness_error .>= target_fitnesses .- fitness[target_dates])
 @constraint(m, fitness_error .>= fitness[target_dates] .- target_fitnesses)
-# Small regularization on maximum fitness
-@constraint(m, max_fitness .>= fitness)
-@constraint(m, max_fitness .>= target_fitnesses .+ 10)
-
-@objective(m, Min, sum(fitness_error) + 1e-5*max_fitness + 1e-7*sum(TSS))
+@objective(m, Min, sum(fitness_error) + 1e-7*sum(TSS))
 
 # Constraints on fitness, fatigue and form
 @constraint(m, [i=1:6], fatigue[i] == (sum(TSS[1:i]) + initial_fitness*(7-i))./7)
@@ -55,30 +69,40 @@ end)
 @constraint(m, [i=target_dates], form[i] >= 0)
 @constraint(m, TSS[target_dates] .== target_race_TSSs)
 
-# Determine base, build and specialty
-weeks_of_races = Int.(floor.(target_dates/7))
-
-
-# # No more than  two rest days a week, but definitely at least one rest day
-# # On rest days, AT MOST rest_day_TSS
-# @variable(m, rest_day[1:n_weeks, 1:7], Bin)
-# for j = 1:n_weeks
-#     @constraint(m, sum(rest_day[j, :]) <= 2)
-#     @constraint(m, sum(rest_day[j, :]) >= 1)
-#     for i=1:7
-#         @constraint(m, TSS[7*(j-1)+ i] <= 1000 * (1-rest_day[j, i]) + rest_day_TSS)
-#         @constraint(m, TSS[7*(j-1)+ i] >= rest_day_TSS)
-#     end
-# end
-
 # Adding rest days
 @constraint(m, [i=1:n_weeks], TSS[4*(i-1) + rest_day] <= 40)
+
+# Rest week every fourth week, corresponding to reduced TSS by rest_week_factor
+for i = 1:Int(floor(n_weeks/4))
+    for j = (i-1)*4+1:i*4
+        if (4*i != j) 
+            if !(4*i in race_weeks) && !(j in race_weeks)
+                @constraint(m, weekly_TSS[4*i] <= rest_week_factor*weekly_TSS[j])
+            end
+        end
+    end
+end
+
+# No more than  two rest days a week, but definitely at least one rest day
+# On rest days, AT MOST rest_day_TSS
+@variable(m, rest_day[1:n_weeks, 1:7], Bin)
+@variable(m, interval_day[1:n_weeks, 1:7], Bin)
+@variable(m, big_day[1:n_weeks, 1:7], Bin)
+for j = 1:n_weeks
+    @constraint(m, sum(rest_day[j, :]) <= 2)
+    @constraint(m, sum(rest_day[j, :]) >= 1)
+    for i=1:7
+        @constraint(m, TSS[7*(j-1)+ i] <= 1000 * (1-rest_day[j, i]) + rest_day_TSS)
+        @constraint(m, TSS[7*(j-1)+ i] >= rest_day_TSS)
+    end
+end
+
 
 # Constraints on ramp rate
 # Constraints on ramp rate per week
 @constraint(m, [i=1:n_weeks], weekly_TSS[i] == sum(TSS[7*i-6:7*i]))
 for i=1:n_weeks
-    if (i == 1) && ((i in weeks_of_races) == false)
+    if (i == 1) && ((i in race_weeks) == false)
         @constraint(m, weekly_TSS[1] <= initial_fitness*7 + max_ramp_rate)
     elseif (i-1 in rest_weeks) == false
         @constraint(m, weekly_TSS[i-1] + max_ramp_rate >= weekly_TSS[i])
@@ -87,19 +111,6 @@ for i=1:n_weeks
     end
 end
 
-
-# Rest week every fourth week, corresponding to reduced TSS by rest_week_factor
-rest_weeks = []
-for i = 1:Int(floor(n_weeks/4))
-    for j = (i-1)*4+1:i*4
-        if (4*i != j) 
-            if !(4*i in weeks_of_races) && !(j in weeks_of_races)
-                @constraint(m, weekly_TSS[4*i] <= rest_week_factor*weekly_TSS[j])
-            end
-        end
-    end
-    push!(rest_weeks, Int(4*i))
-end
 
 # Constraints on max fatigue
 @constraint(m, fatigue .<= max_fatigue)
