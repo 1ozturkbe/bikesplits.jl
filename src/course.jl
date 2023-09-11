@@ -5,9 +5,24 @@ include("structs.jl")
 include("plots.jl")
 
 rider = Rider()
+# course = Course(name = "Test",
+#             lengths = 100 .* ones(100), 
+#             gradients = 1 .* cos.(collect(1:100) ./ 50) + 5 .* sin.(collect(1:100) ./ 10))
+
+
+test_gradients = zeros(10)
+append!(test_gradients, 2*ones(10))
+append!(test_gradients, 5*ones(10))
+append!(test_gradients, zeros(20))
+append!(test_gradients, -2*ones(10))
+append!(test_gradients, 3*ones(40))
+
 course = Course(name = "Test",
-            lengths = 100 .* ones(100), 
-            gradients = 1 .* cos.(collect(1:100) ./ 50) + 5 .* sin.(collect(1:100) ./ 10))
+            lengths = 50 .* ones(100), 
+            gradients = test_gradients
+)
+
+
 
 # Optimal pacing model
 function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
@@ -31,8 +46,7 @@ function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
                     rider.Pmax >= P[1:n] >= 0   # Power in each sector (W)
                     tw[1:n] >= 0                # Recovery time constant (s) 
                     deltaP[1:n]                 # Power above CP (W)                                           
-                    Wcost[1:n] >= 0             # W' depletion rate (J/s)
-                    Wrec[1:n]                   # W' recovery rate (J/s)
+                    Wcost[1:n]                  # W' depletion rate (J/s)
                     rider.Wmax >= W[1:n] >= 0   # W' remaining (J)
     end)
 
@@ -54,15 +68,16 @@ function pacing_model(rider::Rider, course::Course, solver = Ipopt.Optimizer)
 
     # Physiological constraints
     @constraint(m, deltaP .== P .- rider.CP)
+    @NLconstraint(m, [i=1:n], Wcost[i] == deltaP[i] * exp(-xtime[i] * (tw[i] ^ -1)))
+    @NLconstraint(m, [i=1:n], tw[i] == 546*exp(-0.01*(deltaP[i])) + 316)
     @constraint(m, W[1] == rider.Wmax)
-    @constraint(m, Wcost .>= deltaP)
-    @constraint(m, P[n] <= 1/2 * rider.Pmax) # For conditioning of the final sprint
-    @NLconstraint(m, [i=1:n], tw[i] >= 546*exp(-0.01*(deltaP[i])) + 316)
-    @NLconstraint(m, [i=1:n], Wrec[i] <= rider.Wmax / tw[i])
-    @NLconstraint(m, [i=2:n], W[i] <= W[i-1] + xtime[i-1] * Wrec[i-1] - xtime[i-1] * Wcost[i-1])
+    @NLconstraint(m, [i=2:n], W[i] <= W[i-1] - xtime[i-1] * Wcost[i-1])
+
+    # Conditioning constraints
+    @constraint(m, P .<= rider.CP*1.5)
 
     # Objective: minimize total time
-    @objective(m, Min, sum(xtime))  
+    @objective(m, Min, sum(xtime)) 
     return m
 end
 
