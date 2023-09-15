@@ -17,20 +17,21 @@ initial_fatigue = 50
 initial_fitness = 50
 max_ramp_rate = 5 # fitness per week
 max_fatigue = 120
-rest_week_factor = 0.6
+min_rest_week_factor = 0.5
+max_rest_week_factor = 0.75
 rest_day_choice = 1 # Monday
 build_day_choice = [2, 4]   # Tuesday, Thursday
 base_day_choice = [2, 4, 6] # Tuesday, Thursday, Saturday
-weekday_max_TSS = 200
-weekend_max_TSS = 300
+weekday_max_TSS = 200 
+weekend_max_TSS = 250 
 target_dates = [154, 174]
-target_race_TSSs = [200, 170]
+target_race_TSSs = [200, 160]
 
 # Determine base, build and specialty
 # FEEL FREE TO OVERWRITE AND MODIFY THESE TO YOUR LIKING. 
 # DEFINITELY NO MORE THAN 8 WEEKS IN BUILD, REGARDLESS OF YOUR SEASON!
 race_weeks = Int.(floor.(target_dates/7))
-rest_weeks  = collect(1:Int(floor(n_weeks/4)))*4
+rest_weeks  = [i for i in collect(1:Int(floor(n_weeks/4)))*4 if (i in race_weeks) == false]
 n_build_weeks = minimum([8, Int(floor(maximum([4, 0.4 * (n_weeks 
         - length(rest_weeks) - length(race_weeks))])))])
 n_base_weeks = n_weeks - length(race_weeks) - length(rest_weeks) - n_build_weeks
@@ -38,9 +39,15 @@ base_weeks = [i for i in collect(1:n_base_weeks) if (i in rest_weeks) == false]
 build_weeks = []
 for i=n_base_weeks+1:n_weeks
     if ((i in race_weeks) == false) && ((i in rest_weeks) == false)
-        append!(build_weeks, i)
+        if (i < n_weeks) && (i+1 in race_weeks) && (i+1 != race_weeks[1])
+            append!(rest_weeks, i)
+        else
+            append!(build_weeks, i)
+        end
     end
 end
+
+
 
 # ===========================
 # VARIABLES
@@ -85,13 +92,16 @@ end)
 @constraint(m, TSS[target_dates] .== target_race_TSSs)
 
 # Adding rest days, but making sure work gets done on not-rest days
-@constraint(m, [i=1:n_weeks], TSS[4*(i-1) + rest_day_choice] <= 0.4*maximum(target_fitnesses))
+# @constraint(m, [i=n_weeks], TSS[7*(i-1) + rest_day_choice] <= 0.4*maximum(target_fitnesses))
 
 # Introducing base weeks
 # Try to do 3 days of focused endurance work outside of rest days, 
 # Amounting to ~80% of the TSS for the week
-for i=1:length(base_weeks)
-    @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) >= 0.80 * weekly_TSS[i])
+for i = base_weeks
+    for j = 1:length(base_day_choice) - 1
+        @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
+    end
+    @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) >= 0.70 * weekly_TSS[i])
 end
 
 # Building up the build weeks
@@ -99,21 +109,27 @@ end
 # Then, every week, we increase by 5...
 @constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
             TSS[7*(build_weeks[i]-1)+j] == maximum(target_fitnesses) + 5*(i-1) + build_eps[i,j])
+non_build_days = setdiff(1:7, build_day_choice, rest_day_choice)
+# for j = 1:length(non_build_days) - 1
+#     @constraint(m, [i=1:length(build_weeks)], TSS[7*(build_weeks[i]-1) + non_build_days[j]] == TSS[7*(build_weeks[i]-1) +  + non_build_days[j + 1]])
+# end
 @constraint(m, build_eps_error .>= build_eps)
 @constraint(m, build_eps_error .>= -build_eps)
 
 # Rest week every fourth week, corresponding to reduced TSS by rest_week_factor
-for i = 1:Int(floor(n_weeks/4))
+non_rest_days = setdiff(1:7, rest_day_choice)
+for i = 1:length(rest_weeks)
     for j = (i-1)*4+1:i*4
         if (4*i != j) 
-            if !(4*i in race_weeks) && !(j in race_weeks)
-                @constraint(m, weekly_TSS[4*i] <= rest_week_factor*weekly_TSS[j])
-            end
+            @constraint(m, weekly_TSS[4*i] <= max_rest_week_factor*weekly_TSS[j])
+            @constraint(m, weekly_TSS[4*i] >= min_rest_week_factor*weekly_TSS[j])
         end
     end
 end
 
-# Constraints on ramp rate per week, and on maximum weekday and weekend TSSs
+# Constraints on ramp rate per week, 
+# and on maximum weekday and weekend TSSs
+# and on TSS in general
 @constraint(m, [i=1:n_weeks], weekly_TSS[i] == sum(TSS[7*i-6:7*i]))
 for i=1:n_weeks
     if (i == 1) && ((i in race_weeks) == false)
@@ -123,12 +139,12 @@ for i=1:n_weeks
     elseif (i-1 in rest_weeks)
         @constraint(m, weekly_TSS[i-2] + 7*max_ramp_rate >= weekly_TSS[i])
     end
-    # for j = 1:5
-    #     @constraint(m, TSS[7*(i-1) + j] <= weekday_max_TSS)
-    # end
-    # for j = 6:7
-    #     @constraint(m, TSS[7*(i-1) + j] <= weekend_max_TSS)
-    # end
+    for j = 1:5
+        @constraint(m, TSS[7*(i-1) + j] <= weekday_max_TSS)
+    end
+    for j = 6:7
+        @constraint(m, TSS[7*(i-1) + j] <= weekend_max_TSS)
+    end
 end
 
 # Making sure that the maximum weekly TSS is during the base phase, NOT the build
