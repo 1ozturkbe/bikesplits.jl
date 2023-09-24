@@ -1,4 +1,4 @@
-using JuMP, Plots, GLPK, Parameters
+using JuMP, Plots, GLPK, Parameters, Dates
 
 include("structs.jl")
 
@@ -7,32 +7,45 @@ include("plots.jl")
 m = Model(GLPK.Optimizer)
 set_optimizer_attribute(m, "msg_lev", GLPK.GLP_MSG_ON)
 
-# Dates
+# Date counting
+start_date = Dates.Date(2023, 10, 15)
+target_race_dates = [Dates.Date(2024, 03, 29), 
+                     Dates.Date(2024, 05, 04)]
+target_race_TSSs = [250, 250]
+
+
+struct Workout
+    date::Dates.Date
+    TSS::Float64
+    week_count::Int
+    week_type
+    weekly_TSS::Float64
+end     
 
 # Parameters
-n = 175
-n_weeks = Int(floor(n/7))
+target_dates = [d.value for d in target_race_dates - start_date]
+n = maximum(target_dates)
+n = 7*Int(ceil(n/7))
+n_weeks = Int(n/7)
 target_fitnesses = [85, 80]
-initial_fatigue = 50
-initial_fitness = 50
+initial_fatigue = 60
+initial_fitness = 60
 max_ramp_rate = 5 # fitness per week
 max_fatigue = 120
-min_rest_week_factor = 0.5
 max_rest_week_factor = 0.75
+min_rest_week_factor = 0.5
 rest_day_choice = 1 # Monday
 build_day_choice = [2, 4]   # Tuesday, Thursday
 base_day_choice = [2, 4, 6] # Tuesday, Thursday, Saturday
 weekday_max_TSS = 200 
-weekend_max_TSS = 250 
-target_dates = [154, 174]
-target_race_TSSs = [200, 160]
+weekend_max_TSS = 250
 
 # Determine base, build and specialty
 # FEEL FREE TO OVERWRITE AND MODIFY THESE TO YOUR LIKING. 
-# DEFINITELY NO MORE THAN 8 WEEKS IN BUILD, REGARDLESS OF YOUR SEASON!
-race_weeks = Int.(floor.(target_dates/7))
+# DEFINITELY NO MORE THAN 7 WEEKS IN INITIAL BUILD, REGARDLESS OF YOUR SEASON!
+race_weeks = Int.(ceil.(target_dates/7))
 rest_weeks  = [i for i in collect(1:Int(floor(n_weeks/4)))*4 if (i in race_weeks) == false]
-n_build_weeks = minimum([8, Int(floor(maximum([4, 0.4 * (n_weeks 
+n_build_weeks = minimum([7, Int(floor(maximum([4, 0.4 * (n_weeks 
         - length(rest_weeks) - length(race_weeks))])))])
 n_base_weeks = n_weeks - length(race_weeks) - length(rest_weeks) - n_build_weeks
 base_weeks = [i for i in collect(1:n_base_weeks) if (i in rest_weeks) == false]
@@ -47,19 +60,18 @@ for i=n_base_weeks+1:n_weeks
     end
 end
 
-
-
 # ===========================
 # VARIABLES
 # ===========================
 # Variables for measuring progress
 @variables(m, begin
-    1000 >= TSS[1:n] >= 0              # TSS on day i
+    1000 >= TSS[1:n] >= 0      # TSS on day i
     duration[1:n] >= 0         # duration on day i
     intensity[1:n] >= 0        # intensity on day i
     fitness[1:n] >= initial_fitness-1
     fatigue[1:n] >= 0
     weekly_TSS[1:n_weeks] >= 0
+    ramp_rate[1:n_weeks]
     form[1:n]
     fitness_error[1:length(target_dates)] >= 0  # fitness deviation for key events
 end)
@@ -92,7 +104,7 @@ end)
 @constraint(m, TSS[target_dates] .== target_race_TSSs)
 
 # Adding rest days, but making sure work gets done on not-rest days
-# @constraint(m, [i=n_weeks], TSS[7*(i-1) + rest_day_choice] <= 0.4*maximum(target_fitnesses))
+# @constraint(m, [i=n_weeks], TSS[7*(i-1) + rest_day_choice] <= 40)
 
 # Introducing base weeks
 # Try to do 3 days of focused endurance work outside of rest days, 
@@ -101,7 +113,7 @@ for i = base_weeks
     for j = 1:length(base_day_choice) - 1
         @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
     end
-    @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) >= 0.70 * weekly_TSS[i])
+    # @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) >= 0.70 * weekly_TSS[i])
 end
 
 # Building up the build weeks
@@ -110,20 +122,25 @@ end
 @constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
             TSS[7*(build_weeks[i]-1)+j] == maximum(target_fitnesses) + 5*(i-1) + build_eps[i,j])
 non_build_days = setdiff(1:7, build_day_choice, rest_day_choice)
-# for j = 1:length(non_build_days) - 1
-#     @constraint(m, [i=1:length(build_weeks)], TSS[7*(build_weeks[i]-1) + non_build_days[j]] == TSS[7*(build_weeks[i]-1) +  + non_build_days[j + 1]])
-# end
 @constraint(m, build_eps_error .>= build_eps)
 @constraint(m, build_eps_error .>= -build_eps)
 
 # Rest week every fourth week, corresponding to reduced TSS by rest_week_factor
-non_rest_days = setdiff(1:7, rest_day_choice)
 for i = 1:length(rest_weeks)
-    for j = (i-1)*4+1:i*4
-        if (4*i != j) 
-            @constraint(m, weekly_TSS[4*i] <= max_rest_week_factor*weekly_TSS[j])
-            @constraint(m, weekly_TSS[4*i] >= min_rest_week_factor*weekly_TSS[j])
+    rw = rest_weeks[i]
+    bws = []
+    # Let's collect the values of three previous base, build and race weeks
+    for j = rw-1:-1:1
+        if length(bws) >= 3
+            break
         end
+        if (j in rest_weeks) == false
+            append!(bws, j)
+        end
+    end
+    for bw in bws
+        @constraint(m, weekly_TSS[rw] <= max_rest_week_factor*weekly_TSS[bw])
+        @constraint(m, weekly_TSS[rw] >= min_rest_week_factor*weekly_TSS[bw])
     end
 end
 
@@ -131,13 +148,16 @@ end
 # and on maximum weekday and weekend TSSs
 # and on TSS in general
 @constraint(m, [i=1:n_weeks], weekly_TSS[i] == sum(TSS[7*i-6:7*i]))
+@constraint(m, [i=1:n_weeks], ramp_rate[i] <= max_ramp_rate)
 for i=1:n_weeks
-    if (i == 1) && ((i in race_weeks) == false)
-        @constraint(m, weekly_TSS[1] <= initial_fitness*7 + 7*max_ramp_rate)
+    if (i == 1)
+        @constraint(m, weekly_TSS[1] == initial_fitness*7 + 7*ramp_rate[i])
+    elseif (i in race_weeks) #|| (i in camp_weeks)
+        continue
     elseif (i-1 in rest_weeks) == false
-        @constraint(m, weekly_TSS[i-1] + 7*max_ramp_rate >= weekly_TSS[i])
-    elseif (i-1 in rest_weeks)
-        @constraint(m, weekly_TSS[i-2] + 7*max_ramp_rate >= weekly_TSS[i])
+        @constraint(m, weekly_TSS[i-1] + 7*ramp_rate[i] == weekly_TSS[i])
+    elseif (i-2 in rest_weeks) == false
+        @constraint(m, weekly_TSS[i-2] + 7*ramp_rate[i] == weekly_TSS[i])
     end
     for j = 1:5
         @constraint(m, TSS[7*(i-1) + j] <= weekday_max_TSS)
@@ -149,7 +169,7 @@ end
 
 # Making sure that the maximum weekly TSS is during the base phase, NOT the build
 @constraint(m, max_build_TSS .>= weekly_TSS[build_weeks])
-@constraint(m, 1.1*weekly_TSS[base_weeks[end]] >= max_build_TSS)
+@constraint(m, weekly_TSS[base_weeks[end]] >= max_build_TSS)
 
 # Constraints on max fatigue, and adding fatigue accelerations
 @constraint(m, fatigue .<= max_fatigue)
@@ -174,10 +194,73 @@ push!(plots1, scatter!(target_dates, target_fitnesses, label="fitness targets"))
 for i=1:n_weeks
     push!(plots1, plot!([7*i + 0.5, 7*i + 0.5], [0, mf], label=false))
 end
-# # Plot weekly averages as well
-# for i=1:n_weeks
-#     week_avg = getvalue.(sum(m[:TSS][7*(i-1) + 1:7*i]))/7
-#     push!(plots2, plot!([7*(i-1), i*7], [week_avg, week_avg], label=false))
-# end
 
-plot(plots1[length(plots1)])
+# Plotting in base, build and rest weeks
+import Plots.Shape
+rectangle(w, h, x, y) = Shape(x .+ [0,w,w,0], y .+ [0,0,h,h])
+for i in 1:n_weeks
+    if i in rest_weeks
+        push!(plots1, plot!(rectangle(7, weekend_max_TSS, 7*(i-1), 0), color = "green",
+        opacity=0.25, label=false))
+    elseif i in base_weeks
+        push!(plots1, plot!(rectangle(7, weekend_max_TSS, 7*(i-1), 0), color = "blue",
+        opacity=0.25, label=false))
+    elseif i in build_weeks
+        push!(plots1, plot!(rectangle(7, weekend_max_TSS, 7*(i-1), 0), color = "yellow",
+        opacity=0.25, label=false))
+    elseif i in race_weeks
+        push!(plots1, plot!(rectangle(7, weekend_max_TSS, 7*(i-1), 0), color = "red", 
+        opacity=0.25, label=false))
+    end
+end
+
+# Let's plot the weekly progressions
+push!(plots2, plot())
+for i in 1:n_weeks
+    if i in rest_weeks
+        push!(plots2, plot!(rectangle(1, getvalue(weekly_TSS[i]), (i-1), 0), color = "green", 
+        opacity=0.75, label=false))
+    elseif i in base_weeks
+        push!(plots2, plot!(rectangle(1, getvalue(weekly_TSS[i]), (i-1), 0), color = "blue", 
+        opacity=0.75, label=false))
+    elseif i in build_weeks
+        push!(plots2, plot!(rectangle(1, getvalue(weekly_TSS[i]), (i-1), 0), color = "yellow", 
+        opacity=0.75, label=false))
+    elseif i in race_weeks
+        push!(plots2, plot!(rectangle(1, getvalue(weekly_TSS[i]), (i-1), 0), color = "red", 
+        opacity=0.75, label=false))
+    end
+end
+
+plot(plots2[end])
+
+function return_week_type(i:: Int)
+    if i in rest_weeks
+        return "rest"
+    elseif i in base_weeks
+        return "base"
+    elseif i in build_weeks
+        return "build"
+    elseif i in race_weeks
+        return "race"
+    else
+        return ArgumentError("Week number not in dataset.")
+    end
+end
+
+# Filling in Workout data
+workouts = []
+for i in 1:n_weeks
+    for j in 1:7
+        day_number = 7*(i-1) + j
+        nw = Workout(start_date + Dates.Day(day_number-1), 
+                     Int(round(getvalue(TSS[day_number]))), 
+                     i, 
+                     return_week_type(i), 
+                     Int(round(getvalue(weekly_TSS[i])))
+                     )
+        push!(workouts, nw)
+    end
+end
+
+plot(plots2[end])
