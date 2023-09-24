@@ -20,6 +20,9 @@ struct Workout
     week_count::Int
     week_type
     weekly_TSS::Float64
+    fitness::Float64
+    fatigue::Float64
+    form::Float64
 end     
 
 # Parameters
@@ -28,8 +31,8 @@ n = maximum(target_dates)
 n = 7*Int(ceil(n/7))
 n_weeks = Int(n/7)
 target_fitnesses = [85, 80]
-initial_fatigue = 60
-initial_fitness = 60
+initial_fatigue = 50
+initial_fitness = 50
 max_ramp_rate = 5 # fitness per week
 max_fatigue = 120
 max_rest_week_factor = 0.75
@@ -104,7 +107,7 @@ end)
 @constraint(m, TSS[target_dates] .== target_race_TSSs)
 
 # Adding rest days, but making sure work gets done on not-rest days
-# @constraint(m, [i=n_weeks], TSS[7*(i-1) + rest_day_choice] <= 40)
+@constraint(m, [i=1:n_weeks], TSS[7*(i-1) + rest_day_choice] == 40)
 
 # Introducing base weeks
 # Try to do 3 days of focused endurance work outside of rest days, 
@@ -113,7 +116,7 @@ for i = base_weeks
     for j = 1:length(base_day_choice) - 1
         @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
     end
-    # @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) >= 0.70 * weekly_TSS[i])
+    @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) == 0.70 * weekly_TSS[i])
 end
 
 # Building up the build weeks
@@ -169,7 +172,7 @@ end
 
 # Making sure that the maximum weekly TSS is during the base phase, NOT the build
 @constraint(m, max_build_TSS .>= weekly_TSS[build_weeks])
-@constraint(m, weekly_TSS[base_weeks[end]] >= max_build_TSS)
+@constraint(m, weekly_TSS[base_weeks[end]] >= max_build_TSS + 50)
 
 # Constraints on max fatigue, and adding fatigue accelerations
 @constraint(m, fatigue .<= max_fatigue)
@@ -178,7 +181,7 @@ end
 @constraint(m, fitness_error .>= target_fitnesses .- fitness[target_dates])
 @constraint(m, fitness_error .>= fitness[target_dates] .- target_fitnesses)
 @constraint(m, [i=1:n-1], fatigue_accel[i] >= fatigue[i+1] - fatigue[i])
-@objective(m, Min, sum(fitness_error) + 1e-3 * sum(build_eps_error))
+@objective(m, Min, sum(fitness_error) + 1e-3 * sum(build_eps_error) + 1e-7*sum(fatigue_accel))
 
 optimize!(m)
 
@@ -257,7 +260,10 @@ for i in 1:n_weeks
                      Int(round(getvalue(TSS[day_number]))), 
                      i, 
                      return_week_type(i), 
-                     Int(round(getvalue(weekly_TSS[i])))
+                     Int(round(getvalue(weekly_TSS[i]))), 
+                     Int(round(getvalue(fitness[day_number]))), 
+                     Int(round(getvalue(fatigue[day_number]))), 
+                     Int(round(getvalue(form[day_number]))),
                      )
         push!(workouts, nw)
     end

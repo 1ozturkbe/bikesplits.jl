@@ -1,8 +1,5 @@
 import Dates
 
-struct Workout
-    TSS::Float64
-end
 
 # Define the Calendar struct
 struct Calendar
