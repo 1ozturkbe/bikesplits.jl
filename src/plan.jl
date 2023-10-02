@@ -7,18 +7,40 @@ include("plots.jl")
 m = Model(GLPK.Optimizer)
 set_optimizer_attribute(m, "msg_lev", GLPK.GLP_MSG_ON)
 
+plan_type = "A"
+target_fitnesses = [85, 80]
+initial_fatigue = 55
+initial_fitness = 55
+# # B
+# target_fitnesses = [70, 65]
+# initial_fatigue = 50
+# initial_fitness = 50
+# # C
+# target_fitnesses = [60, 55]
+# initial_fatigue = 40
+# initial_fitness = 40
+# # D
+# target_fitnesses = [50, 45]
+# initial_fatigue = 30
+# initial_fitness = 30
+
 # Date counting
-start_date = Dates.Date(2023, 10, 15)
-target_race_dates = [Dates.Date(2024, 03, 29), 
+start_date = Dates.Date(2023, 10, 16)
+target_race_dates = [Dates.Date(2024, 03, 30), 
                      Dates.Date(2024, 05, 04)]
-target_race_TSSs = [250, 250]
+target_race_TSSs = target_fitnesses * 3
+
+# camp_week = [Dates.Date(2024, 03, 29), 
+# Dates.Date(2024, 05, 04)]
 
 
 struct Workout
     date::Dates.Date
     TSS::Float64
+    time::Float64
     week_count::Int
     week_type
+    workout_type
     weekly_TSS::Float64
     fitness::Float64
     fatigue::Float64
@@ -30,12 +52,11 @@ target_dates = [d.value for d in target_race_dates - start_date]
 n = maximum(target_dates)
 n = 7*Int(ceil(n/7))
 n_weeks = Int(n/7)
-target_fitnesses = [85, 80]
-initial_fatigue = 50
-initial_fitness = 50
+all_dates = [start_date + Dates.Day(day_number-1) for day_number = 1:n]
+
 max_ramp_rate = 5 # fitness per week
 max_fatigue = 120
-max_rest_week_factor = 0.75
+max_rest_week_factor = 0.6
 min_rest_week_factor = 0.5
 rest_day_choice = 1 # Monday
 build_day_choice = [2, 4]   # Tuesday, Thursday
@@ -69,11 +90,13 @@ end
 # Variables for measuring progress
 @variables(m, begin
     1000 >= TSS[1:n] >= 0      # TSS on day i
+    time[1:n] >= 0      # time on day i
     duration[1:n] >= 0         # duration on day i
     intensity[1:n] >= 0        # intensity on day i
     fitness[1:n] >= initial_fitness-1
     fatigue[1:n] >= 0
     weekly_TSS[1:n_weeks] >= 0
+    weekly_time[1:n_weeks] >= 0
     ramp_rate[1:n_weeks]
     form[1:n]
     fitness_error[1:length(target_dates)] >= 0  # fitness deviation for key events
@@ -86,6 +109,7 @@ end)
 # Variables defining maximum TSS at each phase
 @variable(m, max_base_TSS >= 0)
 @variable(m, max_build_TSS >= 0)
+@variable(m, max_fitness >= 0)
 
 # Variable for determining the rate at which fatigue is increasing
 # Used to regularize the objective function
@@ -108,13 +132,28 @@ end)
 
 # Adding rest days, but making sure work gets done on not-rest days
 @constraint(m, [i=1:n_weeks], TSS[7*(i-1) + rest_day_choice] == 40)
+@constraint(m, [i=1:n_weeks], 40 * time[7*(i-1) + rest_day_choice] == TSS[7*(i-1) + rest_day_choice])
 
 # Introducing base weeks
 # Try to do 3 days of focused endurance work outside of rest days, 
 # Amounting to ~80% of the TSS for the week
+non_rest_days = setdiff(1:7, rest_day_choice)
 for i = base_weeks
     for j = 1:length(base_day_choice) - 1
         @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
+    end
+    @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) == 0.70 * weekly_TSS[i])
+    for j = non_rest_days
+        @constraint(m, TSS[7*(i-1) .+ j] == 55 * time[7*(i-1) .+ j])
+    end
+end
+
+for i = rest_weeks
+    for j = 1:length(base_day_choice) - 1
+        @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
+    end
+    for j = non_rest_days
+        @constraint(m, TSS[7*(i-1) + j] == 55 * time[7*(i-1) + j])
     end
     @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) == 0.70 * weekly_TSS[i])
 end
@@ -124,7 +163,12 @@ end
 # Then, every week, we increase by 5...
 @constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
             TSS[7*(build_weeks[i]-1)+j] == maximum(target_fitnesses) + 5*(i-1) + build_eps[i,j])
+@constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
+            TSS[7*(build_weeks[i]-1)+j] == 75 * time[7*(build_weeks[i]-1)+j])
 non_build_days = setdiff(1:7, build_day_choice, rest_day_choice)
+@constraint(m, [i=1:length(build_weeks), j=non_build_days], 
+            TSS[7*(build_weeks[i]-1)+j] == 55 * time[7*(build_weeks[i]-1)+j])
+
 @constraint(m, build_eps_error .>= build_eps)
 @constraint(m, build_eps_error .>= -build_eps)
 
@@ -147,10 +191,26 @@ for i = 1:length(rest_weeks)
     end
 end
 
+# Putting in times for the race weeks as well
+for i = race_weeks
+    for j = 1:7
+        if 7*(i-1) + j in target_dates
+            @constraint(m, TSS[7*(i-1) + j] == 70 * time[7*(i-1) + j])
+        elseif mod(7*(i-1) + j, 7) == 1
+            @constraint(m, TSS[7*(i-1) + j] == 40 * time[7*(i-1) + j])
+        elseif mod(7*(i-1) + j, 7) in build_day_choice
+            @constraint(m, TSS[7*(i-1) + j] == 65 * time[7*(i-1) + j])
+        else
+            @constraint(m, TSS[7*(i-1) + j] == 60 * time[7*(i-1) + j])
+        end
+    end
+end
+
 # Constraints on ramp rate per week, 
 # and on maximum weekday and weekend TSSs
 # and on TSS in general
 @constraint(m, [i=1:n_weeks], weekly_TSS[i] == sum(TSS[7*i-6:7*i]))
+@constraint(m, [i=1:n_weeks], weekly_time[i] == sum(time[7*i-6:7*i]))
 @constraint(m, [i=1:n_weeks], ramp_rate[i] <= max_ramp_rate)
 for i=1:n_weeks
     if (i == 1)
@@ -177,11 +237,14 @@ end
 # Constraints on max fatigue, and adding fatigue accelerations
 @constraint(m, fatigue .<= max_fatigue)
 
+# Make sure that the maximum fitness is as low as possible, and add it to the objective
+@constraint(m, max_fitness .>= fitness)
+
 # Objective function (i.e. minimize fitness error)
 @constraint(m, fitness_error .>= target_fitnesses .- fitness[target_dates])
 @constraint(m, fitness_error .>= fitness[target_dates] .- target_fitnesses)
 @constraint(m, [i=1:n-1], fatigue_accel[i] >= fatigue[i+1] - fatigue[i])
-@objective(m, Min, sum(fitness_error) + 1e-3 * sum(build_eps_error) + 1e-7*sum(fatigue_accel))
+@objective(m, Min, sum(fitness_error) + 1e-3 * (max_fitness + sum(build_eps_error)) + 1e-7*sum(fatigue_accel))
 
 optimize!(m)
 
@@ -235,8 +298,6 @@ for i in 1:n_weeks
     end
 end
 
-plot(plots2[end])
-
 function return_week_type(i:: Int)
     if i in rest_weeks
         return "rest"
@@ -251,22 +312,103 @@ function return_week_type(i:: Int)
     end
 end
 
-# Filling in Workout data
-workouts = []
-for i in 1:n_weeks
-    for j in 1:7
-        day_number = 7*(i-1) + j
-        nw = Workout(start_date + Dates.Day(day_number-1), 
-                     Int(round(getvalue(TSS[day_number]))), 
-                     i, 
-                     return_week_type(i), 
-                     Int(round(getvalue(weekly_TSS[i]))), 
-                     Int(round(getvalue(fitness[day_number]))), 
-                     Int(round(getvalue(fatigue[day_number]))), 
-                     Int(round(getvalue(form[day_number]))),
-                     )
-        push!(workouts, nw)
+function return_workout_type(day_count::Int, week_count::Int)
+    week_type = return_week_type(week_count)
+    if mod(day_count, 7) == 1
+        return "Recovery ride"
+    end
+    if week_type in ["rest", "base"]
+        return "Endurance ride"
+    elseif week_type == "build"
+        if mod(day_count, 7) in build_day_choice
+            return "Intervals"
+        else
+            return "Endurance ride"
+        end
+    elseif week_type == "race"
+        if day_count in target_dates
+            return "Race"
+        elseif mod(day_count, 7) in build_day_choice
+                return "Endurance ride with mild efforts"
+            else
+                return "Endurance ride"
+            end
+        else
+        return ArgumentError("Week type is not supported.")
     end
 end
 
+# Filling in Workout data
+workouts = []
+events = []
+for i in 1:n_weeks
+    for j in 1:7
+        day_number = 7*(i-1) + j
+        if getvalue(TSS[day_number]) > 0
+            week_type = return_week_type(i)
+            workout_type = return_workout_type(day_number, i)
+            nw = Workout(start_date + Dates.Day(day_number-1), 
+                        Int(round(getvalue(TSS[day_number]))), 
+                        round(getvalue(time[day_number]), digits=2), 
+                        i, 
+                        week_type, 
+                        workout_type,
+                        Int(round(getvalue(weekly_TSS[i]))), 
+                        Int(round(getvalue(fitness[day_number]))), 
+                        Int(round(getvalue(fatigue[day_number]))), 
+                        Int(round(getvalue(form[day_number]))),
+                        )
+            push!(workouts, nw)
+            new_event = Dict(
+                "summary" => nw.workout_type,
+                "dtstart" => Dates.DateTime(nw.date) + Dates.Hour(13),
+                "dtend" => Dates.DateTime(nw.date) + Dates.Hour(13) + Dates.Minute(Int64(round(nw.time * 60))),
+                "description" => string(nw.TSS) * " TSS"
+            )
+            push!(events, new_event)
+        end
+    end
+end
+
+
+plot(plots1[end])
+savefig(plan_type * "_fitness_profile.pdf")
 plot(plots2[end])
+savefig(plan_type * "_weekly_TSS_profile.pdf")
+
+#20010911T124640Z format!
+# Function to create an iCalendar event
+function create_ical_event(event)
+    # Create an iCalendar event as a string
+    sum = event["summary"]
+    descr = event["description"]
+    dtstart = Dates.format(event["dtstart"], "yyyymmddTHHMMSSZ")
+    dtend = Dates.format(event["dtend"], "yyyymmddTHHMMSSZ")
+    event_text = """
+    BEGIN:VEVENT
+    SUMMARY:$sum
+    DESCRIPTION:$descr
+    DTSTART:$dtstart
+    DTEND:$dtend
+    END:VEVENT
+    """
+    return event_text
+end
+
+function write_calendar(file, events)
+    ical_data = "BEGIN:VCALENDAR\nVERSION:2.0\n"
+    for event in events
+        ical_data *= create_ical_event(event)
+    end
+    ical_data *= "END:VCALENDAR"
+
+    # Write the iCalendar data to a file
+    open(plan_type * "_calendar.ics", "w") do file
+        write(file, ical_data)
+    end
+    println("Calendar events written to " * plan_type * " calendar.ics")
+    return ical_data
+end
+
+ical_data = write_calendar(plan_type * "_calendar.ics", events)
+
