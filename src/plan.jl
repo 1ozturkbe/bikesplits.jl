@@ -8,21 +8,24 @@ m = Model(GLPK.Optimizer)
 set_optimizer_attribute(m, "msg_lev", GLPK.GLP_MSG_ON)
 
 plan_type = "A"
-target_fitnesses = [85, 80]
-initial_fatigue = 55
-initial_fitness = 55
-# # B
-# target_fitnesses = [70, 65]
-# initial_fatigue = 50
-# initial_fitness = 50
-# # C
-# target_fitnesses = [60, 55]
-# initial_fatigue = 40
-# initial_fitness = 40
-# # D
-# target_fitnesses = [50, 45]
-# initial_fatigue = 30
-# initial_fitness = 30
+
+if plan_type == "A"
+    target_fitnesses = [75, 70]
+    initial_fatigue = 55
+    initial_fitness = 55
+elseif plan_type == "B"
+    target_fitnesses = [65, 60]
+    initial_fatigue = 50
+    initial_fitness = 50
+elseif plan_type == "C"
+    target_fitnesses = [55, 50]
+    initial_fatigue = 40
+    initial_fitness = 40
+elseif plan_type == "D"
+    target_fitnesses = [45, 40]
+    initial_fatigue = 30
+    initial_fitness = 30
+end
 
 # Date counting
 start_date = Dates.Date(2023, 10, 16)
@@ -36,6 +39,7 @@ target_race_TSSs = target_fitnesses * 3
 
 struct Workout
     date::Dates.Date
+    day_number::Int
     TSS::Float64
     time::Float64
     week_count::Int
@@ -45,7 +49,32 @@ struct Workout
     fitness::Float64
     fatigue::Float64
     form::Float64
-end     
+end 
+
+function toString(w)
+    field_map = [:date => "Date", 
+                :day_number => "Day number",
+                :workout_type => "Workout type",
+                :TSS => "Workout TSS",
+                :time => "Workout time",
+                :week_count => "Week number",
+                :weekly_TSS => "Weekly TSS",
+                :fitness => "Target fitness",
+                :fatigue => "Target fatigue",
+                :form => "Target form"
+                ]
+    strrep = ""
+    for (k,v) in field_map
+        strrep *= v 
+        strrep *= ": "
+        strrep *= string(getfield(w, k))
+        if k  == :time
+            strrep *= " hours"
+        end
+        strrep *= " \\n"
+    end  
+    return strrep
+end
 
 # Parameters
 target_dates = [d.value for d in target_race_dates - start_date]
@@ -54,7 +83,7 @@ n = 7*Int(ceil(n/7))
 n_weeks = Int(n/7)
 all_dates = [start_date + Dates.Day(day_number-1) for day_number = 1:n]
 
-max_ramp_rate = 5 # fitness per week
+max_ramp_rate = 4 # fitness per week
 max_fatigue = 120
 max_rest_week_factor = 0.6
 min_rest_week_factor = 0.5
@@ -63,6 +92,12 @@ build_day_choice = [2, 4]   # Tuesday, Thursday
 base_day_choice = [2, 4, 6] # Tuesday, Thursday, Saturday
 weekday_max_TSS = 200 
 weekend_max_TSS = 250
+
+# TSS values per hour
+base_TSS_per_hour = 45
+rest_TSS_per_hour = 30
+build_TSS_per_hour = 70
+race_TSS_per_hour = 70
 
 # Determine base, build and specialty
 # FEEL FREE TO OVERWRITE AND MODIFY THESE TO YOUR LIKING. 
@@ -132,7 +167,7 @@ end)
 
 # Adding rest days, but making sure work gets done on not-rest days
 @constraint(m, [i=1:n_weeks], TSS[7*(i-1) + rest_day_choice] == 40)
-@constraint(m, [i=1:n_weeks], 40 * time[7*(i-1) + rest_day_choice] == TSS[7*(i-1) + rest_day_choice])
+@constraint(m, [i=1:n_weeks], rest_TSS_per_hour * time[7*(i-1) + rest_day_choice] == TSS[7*(i-1) + rest_day_choice])
 
 # Introducing base weeks
 # Try to do 3 days of focused endurance work outside of rest days, 
@@ -144,7 +179,7 @@ for i = base_weeks
     end
     @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) == 0.70 * weekly_TSS[i])
     for j = non_rest_days
-        @constraint(m, TSS[7*(i-1) .+ j] == 55 * time[7*(i-1) .+ j])
+        @constraint(m, TSS[7*(i-1) .+ j] == base_TSS_per_hour * time[7*(i-1) .+ j])
     end
 end
 
@@ -153,7 +188,7 @@ for i = rest_weeks
         @constraint(m, TSS[7*(i-1) + base_day_choice[j]] == TSS[7*(i-1) + base_day_choice[j+1]])
     end
     for j = non_rest_days
-        @constraint(m, TSS[7*(i-1) + j] == 55 * time[7*(i-1) + j])
+        @constraint(m, TSS[7*(i-1) + j] == base_TSS_per_hour * time[7*(i-1) + j])
     end
     @constraint(m, sum(TSS[7*(i-1) .+ base_day_choice]) == 0.70 * weekly_TSS[i])
 end
@@ -164,11 +199,11 @@ end
 @constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
             TSS[7*(build_weeks[i]-1)+j] == maximum(target_fitnesses) + 5*(i-1) + build_eps[i,j])
 @constraint(m, [i=1:length(build_weeks), j=build_day_choice], 
-            TSS[7*(build_weeks[i]-1)+j] == 75 * time[7*(build_weeks[i]-1)+j])
+            TSS[7*(build_weeks[i]-1)+j] == build_TSS_per_hour * time[7*(build_weeks[i]-1)+j])
 non_build_days = setdiff(1:7, build_day_choice, rest_day_choice)
 @constraint(m, [i=1:length(build_weeks), j=non_build_days], 
-            TSS[7*(build_weeks[i]-1)+j] == 55 * time[7*(build_weeks[i]-1)+j])
-
+            TSS[7*(build_weeks[i]-1)+j] == base_TSS_per_hour * time[7*(build_weeks[i]-1)+j])
+            
 @constraint(m, build_eps_error .>= build_eps)
 @constraint(m, build_eps_error .>= -build_eps)
 
@@ -195,13 +230,13 @@ end
 for i = race_weeks
     for j = 1:7
         if 7*(i-1) + j in target_dates
-            @constraint(m, TSS[7*(i-1) + j] == 70 * time[7*(i-1) + j])
+            @constraint(m, TSS[7*(i-1) + j] == race_TSS_per_hour * time[7*(i-1) + j])
         elseif mod(7*(i-1) + j, 7) == 1
-            @constraint(m, TSS[7*(i-1) + j] == 40 * time[7*(i-1) + j])
+            @constraint(m, TSS[7*(i-1) + j] == rest_TSS_per_hour * time[7*(i-1) + j])
         elseif mod(7*(i-1) + j, 7) in build_day_choice
-            @constraint(m, TSS[7*(i-1) + j] == 65 * time[7*(i-1) + j])
+            @constraint(m, TSS[7*(i-1) + j] == (build_TSS_per_hour - 10) * time[7*(i-1) + j])
         else
-            @constraint(m, TSS[7*(i-1) + j] == 60 * time[7*(i-1) + j])
+            @constraint(m, TSS[7*(i-1) + j] == base_TSS_per_hour * time[7*(i-1) + j])
         end
     end
 end
@@ -253,13 +288,14 @@ mf = maximum(getvalue.(TSS))
 
 plots1 = []
 plots2 = []
+plots3 = []
 push!(plots1, scatter(getvalue.(m[:TSS]), label="daily TSS"))
 push!(plots1, plot!(getvalue.(m[:fitness]), label="fitness"))
 push!(plots1, plot!(getvalue.(m[:fatigue]), label="fatigue"))
 push!(plots1, scatter!(target_dates, target_fitnesses, label="fitness targets"))
-for i=1:n_weeks
-    push!(plots1, plot!([7*i + 0.5, 7*i + 0.5], [0, mf], label=false))
-end
+# for i=1:n_weeks
+#     push!(plots1, plot!([7*i + 0.5, 7*i + 0.5], [0, mf], label=false))
+# end
 
 # Plotting in base, build and rest weeks
 import Plots.Shape
@@ -280,7 +316,7 @@ for i in 1:n_weeks
     end
 end
 
-# Let's plot the weekly progressions
+# Let's plot the weekly progressions in TSS
 push!(plots2, plot())
 for i in 1:n_weeks
     if i in rest_weeks
@@ -297,6 +333,25 @@ for i in 1:n_weeks
         opacity=0.75, label=false))
     end
 end
+
+# Plot the weekly progressions in time
+push!(plots3, plot())
+for i in 1:n_weeks
+    if i in rest_weeks
+        push!(plots3, plot!(rectangle(1, getvalue(weekly_time[i]), (i-1), 0), color = "green", 
+        opacity=0.75, label=false))
+    elseif i in base_weeks
+        push!(plots3, plot!(rectangle(1, getvalue(weekly_time[i]), (i-1), 0), color = "blue", 
+        opacity=0.75, label=false))
+    elseif i in build_weeks
+        push!(plots3, plot!(rectangle(1, getvalue(weekly_time[i]), (i-1), 0), color = "yellow", 
+        opacity=0.75, label=false))
+    elseif i in race_weeks
+        push!(plots3, plot!(rectangle(1, getvalue(weekly_time[i]), (i-1), 0), color = "red", 
+        opacity=0.75, label=false))
+    end
+end
+
 
 function return_week_type(i:: Int)
     if i in rest_weeks
@@ -348,6 +403,7 @@ for i in 1:n_weeks
             week_type = return_week_type(i)
             workout_type = return_workout_type(day_number, i)
             nw = Workout(start_date + Dates.Day(day_number-1), 
+                        day_number, 
                         Int(round(getvalue(TSS[day_number]))), 
                         round(getvalue(time[day_number]), digits=2), 
                         i, 
@@ -363,7 +419,7 @@ for i in 1:n_weeks
                 "summary" => nw.workout_type,
                 "dtstart" => Dates.DateTime(nw.date) + Dates.Hour(13),
                 "dtend" => Dates.DateTime(nw.date) + Dates.Hour(13) + Dates.Minute(Int64(round(nw.time * 60))),
-                "description" => string(nw.TSS) * " TSS"
+                "description" => toString(nw)
             )
             push!(events, new_event)
         end
@@ -372,9 +428,18 @@ end
 
 
 plot(plots1[end])
+xlabel!("Day number")
+ylabel!("TSS")
 savefig(plan_type * "_fitness_profile.pdf")
 plot(plots2[end])
+xlabel!("Week number")
+ylabel!("Weekly TSS")
 savefig(plan_type * "_weekly_TSS_profile.pdf")
+plot(plots3[end])
+xlabel!("Week number")
+ylabel!("Weekly time (hours)")
+savefig(plan_type * "_weekly_time_profile.pdf")
+
 
 #20010911T124640Z format!
 # Function to create an iCalendar event
@@ -411,4 +476,3 @@ function write_calendar(file, events)
 end
 
 ical_data = write_calendar(plan_type * "_calendar.ics", events)
-
